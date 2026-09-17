@@ -56,7 +56,7 @@ namespace BepinExJS.Plugin
                 // Relay log to connected CLI clients
                 var payload = $"{{\"type\":\"log\",\"level\":\"{EscapeJson(level)}\",\"message\":\"{EscapeJson(message)}\"}}";
                 _wsServer?.Broadcast(payload);
-            });
+            }, this);
 
             try
             {

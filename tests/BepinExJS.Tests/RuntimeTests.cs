@@ -173,5 +173,44 @@ namespace BepinExJS.Tests
                 try { Directory.Delete(tempDir, true); } catch { }
             }
         }
+
+        [Fact]
+        public void TestActionAndUnityActionSupport()
+        {
+            var logs = new List<string>();
+            var runtime = new JsRuntimeManager(new ManualLogSource("Test"), (l, m) => logs.Add(m));
+
+            var script = @"
+                let actionTriggered = false;
+                let unityActionTriggered = false;
+                let receivedVal = 0;
+
+                let myAction = Action(() => {
+                    actionTriggered = true;
+                    console.log('Action triggered!');
+                });
+
+                let myUnityAction = UnityAction(() => {
+                    unityActionTriggered = true;
+                    console.log('UnityAction triggered!');
+                });
+
+                let myValAction = toAction1((val) => {
+                    receivedVal = val;
+                    console.log('Received val:', val);
+                });
+
+                // Invoke the C# delegates
+                myAction();
+                myUnityAction();
+                myValAction(42);
+            ";
+
+            runtime.Reload(script, "actions.js");
+
+            Assert.Contains(logs, l => l.Contains("Action triggered!"));
+            Assert.Contains(logs, l => l.Contains("UnityAction triggered!"));
+            Assert.Contains(logs, l => l.Contains("Received val: 42"));
+        }
     }
 }

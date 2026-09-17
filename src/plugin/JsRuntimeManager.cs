@@ -9,6 +9,7 @@ using Jint.Native.Object;
 using Jint.Native.Function;
 using Jint.Runtime.Interop;
 using UnityEngine;
+using UnityEngine.Events;
 
 using System.Dynamic;
 
@@ -138,6 +139,8 @@ namespace BepinExJS.Plugin
         private readonly Action<string, string> _onLogForward;
         private Engine? _engine;
         private readonly HarmonyBridge _harmonyBridge;
+        private readonly MonoBehaviour? _coroutineHost;
+        private CoroutineBridge? _coroutineBridge;
 
         // Lifecycle callbacks registered from JS
         private readonly List<Action> _updateHooks = new List<Action>();
@@ -147,10 +150,11 @@ namespace BepinExJS.Plugin
 
         private readonly object _lock = new object();
 
-        public JsRuntimeManager(ManualLogSource logger, Action<string, string> onLogForward)
+        public JsRuntimeManager(ManualLogSource logger, Action<string, string> onLogForward, MonoBehaviour? coroutineHost = null)
         {
             _logger = logger;
             _onLogForward = onLogForward;
+            _coroutineHost = coroutineHost;
             _harmonyBridge = new HarmonyBridge("com.bepinexjs.dynamic");
         }
 
@@ -281,6 +285,63 @@ namespace BepinExJS.Plugin
 
             // Dynamic Harmony helper
             engine.SetValue("Harmony", new HarmonyJsHelper(_harmonyBridge, _logger, this, engine));
+
+            // Action & UnityAction delegate helpers
+            var actionBridge = new ActionBridge(engine);
+            engine.SetValue("toAction", new Func<JsValue, Action>(actionBridge.CreateAction));
+            engine.SetValue("Action", new Func<JsValue, Action>(actionBridge.CreateAction));
+            engine.SetValue("toAction1", new Func<JsValue, Action<object>>(actionBridge.CreateAction1));
+            engine.SetValue("toUnityAction", new Func<JsValue, UnityAction>(actionBridge.CreateUnityAction));
+            engine.SetValue("UnityAction", new Func<JsValue, UnityAction>(actionBridge.CreateUnityAction));
+            engine.SetValue("toUnityActionBool", new Func<JsValue, UnityAction<bool>>(actionBridge.CreateUnityActionBool));
+            engine.SetValue("toUnityActionFloat", new Func<JsValue, UnityAction<float>>(actionBridge.CreateUnityActionFloat));
+            engine.SetValue("toUnityActionString", new Func<JsValue, UnityAction<string>>(actionBridge.CreateUnityActionString));
+            engine.SetValue("toFunc", new Func<JsValue, Func<object?>>(actionBridge.CreateFunc));
+
+            // Coroutine & Async delay helpers
+            if (!object.ReferenceEquals(_coroutineHost, null))
+            {
+                _coroutineBridge = new CoroutineBridge(_coroutineHost);
+                engine.SetValue("__coroutineWaitSeconds", new Action<float, Action>(_coroutineBridge.WaitSeconds));
+                engine.SetValue("__coroutineWaitNextFrame", new Action<Action>(_coroutineBridge.WaitNextFrame));
+                engine.SetValue("__coroutineWaitForFixedUpdate", new Action<Action>(_coroutineBridge.WaitForFixedUpdate));
+            }
+            else
+            {
+                // Fallback for test / headless environments
+                engine.SetValue("__coroutineWaitSeconds", new Action<float, Action>((s, cb) => cb?.Invoke()));
+                engine.SetValue("__coroutineWaitNextFrame", new Action<Action>(cb => cb?.Invoke()));
+                engine.SetValue("__coroutineWaitForFixedUpdate", new Action<Action>(cb => cb?.Invoke()));
+            }
+
+            engine.Execute(@"
+                    function waitSeconds(seconds) {
+                        return new Promise(function(resolve) {
+                            __coroutineWaitSeconds(seconds, resolve);
+                        });
+                    }
+                    function waitNextFrame() {
+                        return new Promise(function(resolve) {
+                            __coroutineWaitNextFrame(resolve);
+                        });
+                    }
+                    function waitForFixedUpdate() {
+                        return new Promise(function(resolve) {
+                            __coroutineWaitForFixedUpdate(resolve);
+                        });
+                    }
+                    async function waitFor(predicate, intervalSeconds) {
+                        intervalSeconds = intervalSeconds || 0.1;
+                        while (!predicate()) {
+                            await waitSeconds(intervalSeconds);
+                        }
+                    }
+                    function startCoroutine(asyncFn) {
+                        return asyncFn().catch(function(err) {
+                            console.error('[Coroutine Error]', err);
+                        });
+                    }
+                ");
         }
 
         private void LogBridge(string level, object[] args)
@@ -314,6 +375,10 @@ namespace BepinExJS.Plugin
             _updateHooks.Clear();
             _fixedUpdateHooks.Clear();
             _guiHooks.Clear();
+
+            // Stop coroutines
+            _coroutineBridge?.StopAll();
+            _coroutineBridge = null;
 
             // Unpatch Harmony
             _harmonyBridge.UnpatchAll();

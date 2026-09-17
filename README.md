@@ -187,6 +187,47 @@ onFixedUpdate(() => {
 });
 ```
 
+### Coroutines & Async / Await
+Pause execution or create asynchronous routines running on Unity's frame/physics loop without freezing the game:
+
+```typescript
+// Start an async coroutine
+startCoroutine(async () => {
+  console.log("Waiting 3 seconds...");
+  await waitSeconds(3.0);
+  console.log("3 seconds passed!");
+
+  // Wait for next frame (equivalent to yield return null)
+  await waitNextFrame();
+
+  // Wait until a custom condition is met
+  await waitFor(() => CS.UnityEngine.GameObject.Find("Boss") !== null);
+  console.log("Boss spawned!");
+});
+```
+*(All running coroutines are automatically cancelled and cleaned up on hot-reload).*
+
+### Action & UnityAction Delegates
+Effortlessly pass JavaScript callbacks to C# methods, events, and Unity UI buttons:
+
+```typescript
+// Native Unity UI Button
+const button = myButtonObj.GetComponent(CS.UnityEngine.UI.Button);
+button.onClick.AddListener(UnityAction(() => {
+  console.log("Button clicked from JS!");
+}));
+
+// C# Action with arguments
+const myAction = toAction1((arg) => {
+  console.log("C# event received:", arg);
+});
+
+// Unity UI Sliders / Toggles
+slider.onValueChanged.AddListener(toUnityActionFloat((val) => {
+  console.log("Slider moved to:", val);
+}));
+```
+
 ### In-Game GUI (IMGUI)
 Render hot-reloadable IMGUI windows:
 ```typescript

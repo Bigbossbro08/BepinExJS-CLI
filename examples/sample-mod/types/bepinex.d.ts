@@ -56,3 +56,25 @@ declare const Harmony: {
     }
   ): boolean;
 };
+
+/**
+ * Coroutine & Async Delay Helpers
+ */
+declare function waitSeconds(seconds: number): Promise<void>;
+declare function waitNextFrame(): Promise<void>;
+declare function waitForFixedUpdate(): Promise<void>;
+declare function waitFor(predicate: () => boolean, intervalSeconds?: number): Promise<void>;
+declare function startCoroutine(asyncFn: () => Promise<any>): Promise<any>;
+
+/**
+ * Action & UnityAction Delegate Converters
+ */
+declare function Action(fn: () => void): any;
+declare function toAction(fn: () => void): any;
+declare function toAction1(fn: (arg: any) => void): any;
+declare function UnityAction(fn: () => void): any;
+declare function toUnityAction(fn: () => void): any;
+declare function toUnityActionBool(fn: (val: boolean) => void): any;
+declare function toUnityActionFloat(fn: (val: number) => void): any;
+declare function toUnityActionString(fn: (val: string) => void): any;
+declare function toFunc(fn: () => any): any;

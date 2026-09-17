@@ -1,0 +1,12 @@
+{
+  "name": "sample-mod",
+  "version": "1.0.0",
+  "description": "Unity game mod built with BepinExJS",
+  "scripts": {
+    "dev": "bepinexjs dev src/index.ts",
+    "repl": "bepinexjs repl"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.2"
+  }
+}

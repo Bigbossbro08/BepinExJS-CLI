@@ -1,0 +1,24 @@
+# Build outputs
+bin/
+obj/
+dist/
+*.suo
+*.user
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDEs
+.vs/
+.idea/
+.vscode/*.user
+*.swp
+*.orig
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

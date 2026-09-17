@@ -1,0 +1,28 @@
+{
+  "name": "bepinexjs",
+  "version": "0.1.0",
+  "description": "CLI and hot-reload dev system for Unity/BepInEx JavaScript mods",
+  "bin": {
+    "bepinexjs": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "keywords": ["bepinex", "unity", "javascript", "hot-reload", "modding", "cli"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "chokidar": "^3.6.0",
+    "commander": "^12.1.0",
+    "esbuild": "^0.21.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.5.2"
+  }
+}

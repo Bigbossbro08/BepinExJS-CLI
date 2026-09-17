@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "BepinExJS: Start Dev & Hot-Reload",
+      "type": "shell",
+      "command": "bepinexjs dev src/index.ts",
+      "isBackground": true,
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "BepinExJS: Interactive REPL",
+      "type": "shell",
+      "command": "bepinexjs repl",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "BepinExJS: Extract Live C# Types",
+      "type": "shell",
+      "command": "bepinexjs gen-types --live",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always"
+      }
+    }
+  ]
+}

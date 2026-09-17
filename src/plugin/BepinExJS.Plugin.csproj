@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>BepinExJS.Plugin</AssemblyName>
+    <RootNamespace>BepinExJS.Plugin</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <PackageReference Include="Fleck" Version="1.2.0" />
+    <PackageReference Include="HarmonyX" Version="2.16.1" />
+    <PackageReference Include="Jint" Version="3.1.6" />
+    <PackageReference Include="UnityEngine" Version="5.6.1" />
+  </ItemGroup>
+
+</Project>

@@ -97,9 +97,17 @@ Inspect game state and evaluate expressions live in the game:
 bepinex> CS.UnityEngine.Time.timeScale = 2.0
 => 2.0
 
-bepinex> CS.UnityEngine.GameObject.FindObjectsOfType(CS.UnityEngine.Camera).length
-=> 1
+### D. Deploy for Game Startup (Permanent Installation)
+When your mod is ready and you want it to run automatically on game startup without opening the CLI:
+
+```bash
+# Option 1: Direct install into your game's BepInEx/scripts folder
+bepinexjs build src/index.ts --game-dir "C:/path/to/YourUnityGame"
+
+# Option 2: Output to dist/
+bepinexjs build src/index.ts
 ```
+The game's `BepinExJS` plugin automatically scans and executes **all `.js` files** placed in `<Game>/BepInEx/scripts/` whenever the game boots up!
 
 ---
 

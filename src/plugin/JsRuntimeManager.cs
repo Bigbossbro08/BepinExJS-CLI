@@ -187,6 +187,33 @@ namespace BepinExJS.Plugin
             }
         }
 
+        public void ExecuteStartupScript(string code, string sourceName = "startup.js")
+        {
+            lock (_lock)
+            {
+                if (_engine == null)
+                {
+                    _engine = new Engine(options =>
+                    {
+                        options.AllowClr(AppDomain.CurrentDomain.GetAssemblies());
+                        options.AllowOperatorOverloading();
+                        options.CatchClrExceptions();
+                    });
+                    SetupGlobals(_engine);
+                }
+
+                try
+                {
+                    _engine.Execute(code, sourceName);
+                    _logger.LogInfo($"[BepinExJS] Successfully executed startup script: {sourceName}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"[BepinExJS] Error executing startup script {sourceName}: {ex}");
+                }
+            }
+        }
+
         public string ExecuteRepl(string snippet)
         {
             lock (_lock)

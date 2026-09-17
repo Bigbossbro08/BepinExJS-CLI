@@ -14,9 +14,24 @@ onGUI(() => {
   // Render a simple window
   GUI.Box(new Rect(20, 20, 260, 150), "★ BepinExJS Mod Menu ★");
 
-  if (GUI.Button(new Rect(35, 100, 230, 30), "Log Game Objects in Scene")) {
+  if (GUI.Button(new Rect(35, 60, 230, 30), "Spawn Test Cube")) {
+    console.log("[Mod] Spawning a test cube...");
+    const cube = CS.UnityEngine.GameObject.CreatePrimitive(CS.UnityEngine.PrimitiveType.Cube);
+    cube.name = "BepinExJS_Cube";
+    cube.transform.position = new CS.UnityEngine.Vector3(0, 2, 5);
+  }
+
+  if (GUI.Button(new Rect(35, 100, 230, 30), "Log Game Time")) {
+    console.log("[Mod] Unity Time: " + CS.UnityEngine.Time.time);
+  }
+
+  if (GUI.Button(new Rect(35, 140, 230, 30), "Get all GameObjects")) {
+    // ----------------------------------------------------
+    // Example: Inspect all objects in console
+    // ----------------------------------------------------
     const objects = getAllSceneObjects();
     console.log(`[Scene Inspector] Total GameObjects found: ${objects.length}`);
+
     // Print the first 15 objects with their positions and active status
     objects.forEach((obj, idx) => {
       const pos = obj.transform.position;
@@ -50,6 +65,7 @@ function getAllSceneObjects() {
   const rootObjects = activeScene.GetRootGameObjects();
   
   const allObjects = [];
+
   // Recursive function to collect an object and all its children
   function collectHierarchy(obj) {
     allObjects.push(obj);
@@ -62,9 +78,11 @@ function getAllSceneObjects() {
       collectHierarchy(childObj);
     }
   }
+
   // Traverse all root objects in the scene
   for (let i = 0; i < rootObjects.length; i++) {
     collectHierarchy(rootObjects[i]);
   }
+
   return allObjects;
 }

@@ -65,18 +65,27 @@ namespace BepinExJS.Plugin
                 Logger.LogError($"Failed to start WebSocket server: {ex.Message}");
             }
 
-            // Check if autoload script exists
-            var fullPath = Path.Combine(Paths.GameRootPath, _autoLoadScriptConfig.Value);
-            if (File.Exists(fullPath))
+            // Auto-load scripts from BepInEx/scripts directory
+            var scriptsDir = Path.Combine(Paths.BepInExRootPath, "scripts");
+            if (!Directory.Exists(scriptsDir))
             {
-                try
+                try { Directory.CreateDirectory(scriptsDir); } catch { }
+            }
+            else
+            {
+                var scriptFiles = Directory.GetFiles(scriptsDir, "*.js", SearchOption.AllDirectories);
+                foreach (var scriptPath in scriptFiles)
                 {
-                    var code = File.ReadAllText(fullPath);
-                    _runtimeManager.Reload(code, Path.GetFileName(fullPath));
-                }
-                catch (Exception ex)
-                {
-                    Logger.LogError($"Failed to load autoload script: {ex.Message}");
+                    try
+                    {
+                        Logger.LogInfo($"[Startup] Autoloading script: {Path.GetFileName(scriptPath)}");
+                        var code = File.ReadAllText(scriptPath);
+                        _runtimeManager.ExecuteStartupScript(code, Path.GetFileName(scriptPath));
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError($"[Startup] Failed to load {Path.GetFileName(scriptPath)}: {ex.Message}");
+                    }
                 }
             }
         }

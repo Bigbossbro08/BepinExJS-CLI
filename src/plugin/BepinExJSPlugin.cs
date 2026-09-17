@@ -128,6 +128,19 @@ namespace BepinExJS.Plugin
                     }
                 });
             }
+            else if (rawMessage.Contains("\"type\":\"unload\"") || rawMessage.Contains("\"type\": \"unload\""))
+            {
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    Logger.LogInfo("[BepinExJS] Unload requested by CLI. Cleaning up mod...");
+                    _runtimeManager?.Teardown();
+                    try
+                    {
+                        socket.Send("{\"type\":\"unload_ack\",\"status\":\"ok\"}");
+                    }
+                    catch { }
+                });
+            }
             else if (rawMessage.Contains("\"type\":\"ping\"") || rawMessage.Contains("\"type\": \"ping\""))
             {
                 socket.Send("{\"type\":\"pong\"}");

@@ -150,6 +150,35 @@ export async function runDev(entryFile: string, options: DevOptions) {
     }
   });
 
+  // Graceful shutdown on Ctrl+C
+  let isShuttingDown = false;
+  const cleanupAndExit = () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log(chalk.yellow('\n[BepinExJS] Shutting down dev server. Unloading mod in game...'));
+    try { watcher.close(); } catch {}
+
+    if (ws && isConnected && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: 'unload' }), () => {
+          try { ws?.close(); } catch {}
+          console.log(chalk.green('[BepinExJS] Mod unloaded cleanly. Goodbye!'));
+          process.exit(0);
+        });
+        setTimeout(() => {
+          process.exit(0);
+        }, 400);
+        return;
+      } catch {}
+    }
+
+    process.exit(0);
+  };
+
+  process.on('SIGINT', cleanupAndExit);
+  process.on('SIGTERM', cleanupAndExit);
+
   // Start connecting to WebSocket
   connect();
 }

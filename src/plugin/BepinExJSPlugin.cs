@@ -11,10 +11,6 @@ namespace BepinExJS.Plugin
     [BepInPlugin("com.bepinexjs.plugin", "BepinExJS Plugin", "1.0.0")]
     public class BepinExJSPlugin : BaseUnityPlugin
     {
-        private ConfigEntry<int>? _portConfig;
-        private ConfigEntry<string>? _hostConfig;
-        private ConfigEntry<string>? _autoLoadScriptConfig;
-
         static BepinExJSPlugin()
         {
             AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
@@ -39,15 +35,21 @@ namespace BepinExJS.Plugin
 
         private WsServer? _wsServer;
         private JsRuntimeManager? _runtimeManager;
+        private ModConfigManager? _configManager;
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new ConcurrentQueue<Action>();
 
         private void Awake()
         {
-            _portConfig = Config.Bind("Server", "Port", 9092, "WebSocket server port for hot-reload CLI");
-            _hostConfig = Config.Bind("Server", "Host", "127.0.0.1", "WebSocket server host");
-            _autoLoadScriptConfig = Config.Bind("Scripts", "AutoLoad", "BepInEx/scripts/bundle.js", "Path to script to autoload on game start");
-
             Logger.LogInfo("Initializing BepinExJS Runtime...");
+
+            // 1. Load BepInExJS.json from GameRootPath
+            _configManager = new ModConfigManager(Paths.GameRootPath, Logger);
+
+            if (!_configManager.Enabled)
+            {
+                Logger.LogWarning("[BepinExJS] Disabled via BepInExJS.json. Skipping initialization.");
+                return;
+            }
 
             _runtimeManager = new JsRuntimeManager(Logger, (level, message) =>
             {
@@ -58,34 +60,26 @@ namespace BepinExJS.Plugin
 
             try
             {
-                _wsServer = new WsServer(_hostConfig.Value, _portConfig.Value, HandleClientMessage, msg => Logger.LogInfo(msg));
+                _wsServer = new WsServer(_configManager.Host, _configManager.Port, HandleClientMessage, msg => Logger.LogInfo(msg));
             }
             catch (Exception ex)
             {
                 Logger.LogError($"Failed to start WebSocket server: {ex.Message}");
             }
 
-            // Auto-load scripts from BepInEx/scripts directory
-            var scriptsDir = Path.Combine(Paths.BepInExRootPath, "scripts");
-            if (!Directory.Exists(scriptsDir))
+            // 2. Execute all startup mod files resolved from BepInExJS.json
+            var startupFiles = _configManager.ResolveAllStartupModFiles();
+            foreach (var scriptPath in startupFiles)
             {
-                try { Directory.CreateDirectory(scriptsDir); } catch { }
-            }
-            else
-            {
-                var scriptFiles = Directory.GetFiles(scriptsDir, "*.js", SearchOption.AllDirectories);
-                foreach (var scriptPath in scriptFiles)
+                try
                 {
-                    try
-                    {
-                        Logger.LogInfo($"[Startup] Autoloading script: {Path.GetFileName(scriptPath)}");
-                        var code = File.ReadAllText(scriptPath);
-                        _runtimeManager.ExecuteStartupScript(code, Path.GetFileName(scriptPath));
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.LogError($"[Startup] Failed to load {Path.GetFileName(scriptPath)}: {ex.Message}");
-                    }
+                    Logger.LogInfo($"[Startup] Autoloading mod: {Path.GetFileName(scriptPath)} from {Path.GetDirectoryName(scriptPath)}");
+                    var code = File.ReadAllText(scriptPath);
+                    _runtimeManager.ExecuteStartupScript(code, Path.GetFileName(scriptPath));
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError($"[Startup] Failed to load {Path.GetFileName(scriptPath)}: {ex.Message}");
                 }
             }
         }

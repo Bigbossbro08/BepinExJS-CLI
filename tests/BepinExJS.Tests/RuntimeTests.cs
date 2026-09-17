@@ -123,5 +123,55 @@ namespace BepinExJS.Tests
 
             await client.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "Closing", System.Threading.CancellationToken.None);
         }
+
+        [Fact]
+        public void TestModConfigManagerParsesCustomDirectoriesAndStartupMods()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "BepinExJSTest_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                // Create custom directories
+                var bepinexJsDir = Path.Combine(tempDir, "BepInExJS");
+                var myModsDir = Path.Combine(tempDir, "MyMods");
+                Directory.CreateDirectory(bepinexJsDir);
+                Directory.CreateDirectory(myModsDir);
+
+                // Create some mod files
+                File.WriteAllText(Path.Combine(bepinexJsDir, "auto1.js"), "console.log('auto1');");
+                File.WriteAllText(Path.Combine(myModsDir, "custom1.js"), "console.log('custom1');");
+                File.WriteAllText(Path.Combine(myModsDir, "disabled.js"), "console.log('disabled');");
+
+                // Write BepInExJS.json
+                var jsonContent = @"{
+                  ""enabled"": true,
+                  ""port"": 9999,
+                  ""autoloadDirectories"": [
+                    ""BepInExJS""
+                  ],
+                  ""startupMods"": [
+                    ""MyMods/custom1.js"",
+                    { ""path"": ""MyMods/disabled.js"", ""enabled"": false }
+                  ]
+                }";
+                File.WriteAllText(Path.Combine(tempDir, "BepInExJS.json"), jsonContent);
+
+                var logger = new ManualLogSource("TestLog");
+                var config = new ModConfigManager(tempDir, logger);
+
+                Assert.True(config.Enabled);
+                Assert.Equal(9999, config.Port);
+
+                var resolved = new List<string>(config.ResolveAllStartupModFiles());
+                Assert.Contains(resolved, f => f.EndsWith("auto1.js", StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(resolved, f => f.EndsWith("custom1.js", StringComparison.OrdinalIgnoreCase));
+                Assert.DoesNotContain(resolved, f => f.EndsWith("disabled.js", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
     }
 }

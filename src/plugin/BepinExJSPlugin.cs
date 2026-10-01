@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
+using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
 using Fleck;
@@ -36,6 +38,7 @@ namespace BepinExJS.Plugin
         private WsServer? _wsServer;
         private JsRuntimeManager? _runtimeManager;
         private ModConfigManager? _configManager;
+        private GameSessionRegistry? _sessionRegistry;
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new ConcurrentQueue<Action>();
 
         private void Awake()
@@ -56,11 +59,15 @@ namespace BepinExJS.Plugin
                 // Relay log to connected CLI clients
                 var payload = $"{{\"type\":\"log\",\"level\":\"{EscapeJson(level)}\",\"message\":\"{EscapeJson(message)}\"}}";
                 _wsServer?.Broadcast(payload);
-            }, this);
+            }, this, action => _mainThreadQueue.Enqueue(action));
 
             try
             {
                 _wsServer = new WsServer(_configManager.Host, _configManager.Port, HandleClientMessage, msg => Logger.LogInfo(msg));
+
+                // Register session in ~/.bepinexjs/sessions/<PID>.json
+                _sessionRegistry = new GameSessionRegistry(Logger);
+                _sessionRegistry.RegisterSession(_wsServer.BoundPort, _configManager.Host);
             }
             catch (Exception ex)
             {
@@ -73,9 +80,10 @@ namespace BepinExJS.Plugin
             {
                 try
                 {
-                    Logger.LogInfo($"[Startup] Autoloading mod: {Path.GetFileName(scriptPath)} from {Path.GetDirectoryName(scriptPath)}");
+                    var modDir = Path.GetDirectoryName(scriptPath);
+                    Logger.LogInfo($"[Startup] Autoloading mod: {Path.GetFileName(scriptPath)} from {modDir}");
                     var code = File.ReadAllText(scriptPath);
-                    _runtimeManager.ExecuteStartupScript(code, Path.GetFileName(scriptPath));
+                    _runtimeManager.ExecuteStartupScript(code, scriptPath, modDir);
                 }
                 catch (Exception ex)
                 {
@@ -84,75 +92,267 @@ namespace BepinExJS.Plugin
             }
         }
 
+        private long _lastAppliedGeneration = 0;
+
+        /// <summary>
+        /// Holds the most recent pending reload request. Only the latest one is ever executed.
+        /// Written from background WS threads; read and cleared on the Unity main thread in Update().
+        /// </summary>
+        private struct PendingReload
+        {
+            public string Code;
+            public string Path;
+            public string? ModDir;
+            public long Generation;
+            public IWebSocketConnection Socket;
+        }
+        private PendingReload? _pendingReload = null;
+        private readonly object _pendingReloadLock = new object();
+
         private void HandleClientMessage(string rawMessage, IWebSocketConnection socket)
         {
-            // Simple parsing to avoid extra dependencies
-            if (rawMessage.Contains("\"type\":\"reload\"") || rawMessage.Contains("\"type\": \"reload\""))
-            {
-                var code = ExtractJsonField(rawMessage, "code");
-                var path = ExtractJsonField(rawMessage, "path") ?? "mod.bundle.js";
+            // Extract the "type" field once and dispatch via switch — handles any key ordering / whitespace
+            var msgType = ExtractJsonField(rawMessage, "type");
+            if (string.IsNullOrEmpty(msgType)) return;
 
-                _mainThreadQueue.Enqueue(() =>
-                {
-                    _runtimeManager?.Reload(code, path);
-                    socket.Send("{\"type\":\"reload_ack\",\"status\":\"ok\"}");
-                });
-            }
-            else if (rawMessage.Contains("\"type\":\"eval\"") || rawMessage.Contains("\"type\": \"eval\""))
+            switch (msgType)
             {
-                var code = ExtractJsonField(rawMessage, "code");
-                var id = ExtractJsonField(rawMessage, "id") ?? "";
+                case "reload":
+                {
+                    var code = ExtractJsonField(rawMessage, "code");
+                    var path = ExtractJsonField(rawMessage, "path");
+                    if (string.IsNullOrEmpty(path)) path = "mod.bundle.js";
+                    var modDir = ExtractJsonField(rawMessage, "modDir");
+                    var genStr = ExtractJsonField(rawMessage, "generation");
+                    long generation = 0;
+                    if (!string.IsNullOrEmpty(genStr)) long.TryParse(genStr, out generation);
 
-                _mainThreadQueue.Enqueue(() =>
-                {
-                    var result = _runtimeManager?.ExecuteRepl(code) ?? "Error: Runtime not initialized";
-                    socket.Send($"{{\"type\":\"eval_result\",\"id\":\"{EscapeJson(id)}\",\"result\":\"{EscapeJson(result)}\"}}");
-                });
-            }
-            else if (rawMessage.Contains("\"type\":\"dump_types\"") || rawMessage.Contains("\"type\": \"dump_types\""))
-            {
-                var assemblyName = ExtractJsonField(rawMessage, "assembly");
-                _mainThreadQueue.Enqueue(() =>
-                {
-                    try
+                    // Latest-wins: overwrite any previously queued but unexecuted reload
+                    lock (_pendingReloadLock)
                     {
-                        Logger.LogInfo("[TypeGen] Extracting C# types for Assembly-CSharp...");
-                        var dts = string.IsNullOrEmpty(assemblyName)
-                            ? TypeDefGenerator.GenerateDtsForLoadedAssemblies("Assembly-CSharp")
-                            : TypeDefGenerator.GenerateDtsForLoadedAssemblies(assemblyName);
+                        _pendingReload = new PendingReload
+                        {
+                            Code = code,
+                            Path = path,
+                            ModDir = modDir,
+                            Generation = generation,
+                            Socket = socket
+                        };
+                    }
+                    break;
+                }
 
-                        Logger.LogInfo($"[TypeGen] Generated {dts.Length} characters of type definitions. Sending to CLI...");
-                        socket.Send($"{{\"type\":\"dump_types_result\",\"dts\":\"{EscapeJson(dts)}\"}}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.LogError($"[TypeGen] Error dumping types: {ex}");
-                        socket.Send($"{{\"type\":\"dump_types_result\",\"error\":\"{EscapeJson(ex.Message)}\"}}");
-                    }
-                });
-            }
-            else if (rawMessage.Contains("\"type\":\"unload\"") || rawMessage.Contains("\"type\": \"unload\""))
-            {
-                _mainThreadQueue.Enqueue(() =>
+                case "eval":
                 {
-                    Logger.LogInfo("[BepinExJS] Unload requested by CLI. Cleaning up mod...");
-                    _runtimeManager?.Teardown();
-                    try
+                    var code = ExtractJsonField(rawMessage, "code");
+                    var id = ExtractJsonField(rawMessage, "id") ?? "";
+                    _mainThreadQueue.Enqueue(() =>
                     {
-                        socket.Send("{\"type\":\"unload_ack\",\"status\":\"ok\"}");
+                        var result = _runtimeManager?.ExecuteRepl(code) ?? "Error: Runtime not initialized";
+                        try
+                        {
+                            if (socket.IsAvailable)
+                                socket.Send($"{{\"type\":\"eval_result\",\"id\":\"{EscapeJson(id)}\",\"result\":\"{EscapeJson(result)}\"}}");
+                        }
+                        catch { }
+                    });
+                    break;
+                }
+
+                case "dump_types":
+                {
+                    var assemblyName = ExtractJsonField(rawMessage, "assembly");
+                    var assembliesField = ExtractJsonField(rawMessage, "assemblies");
+                    var splitField = ExtractJsonField(rawMessage, "split");
+                    bool split = splitField != null && (splitField.Equals("true", StringComparison.OrdinalIgnoreCase) || splitField.Equals("1"));
+
+                    _mainThreadQueue.Enqueue(() =>
+                    {
+                        try
+                        {
+                            string[] targets;
+                            if (!string.IsNullOrEmpty(assembliesField))
+                            {
+                                targets = assembliesField.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                                         .Select(s => s.Trim())
+                                                         .ToArray();
+                            }
+                            else if (!string.IsNullOrEmpty(assemblyName))
+                            {
+                                targets = new[] { assemblyName.Trim() };
+                            }
+                            else
+                            {
+                                targets = new[] { "Assembly-CSharp" };
+                            }
+
+                            Logger.LogInfo($"[TypeGen] Extracting C# types for assemblies (split={split}): {string.Join(", ", targets)}...");
+                            var perAssembly = TypeDefGenerator.GenerateDtsPerAssembly(targets);
+
+                            var sb = new StringBuilder();
+                            sb.Append("{\"type\":\"dump_types_result\",\"split\":true,\"files\":{");
+                            int count = 0;
+                            foreach (var kvp in perAssembly)
+                            {
+                                if (count > 0) sb.Append(",");
+                                sb.Append($"\"{EscapeJson(kvp.Key)}\":\"{EscapeJson(kvp.Value)}\"");
+                                count++;
+                            }
+                            sb.Append("},");
+
+                            var combinedDts = TypeDefGenerator.GenerateDtsForLoadedAssemblies(targets);
+                            sb.Append($"\"dts\":\"{EscapeJson(combinedDts)}\"}}");
+
+                            Logger.LogInfo($"[TypeGen] Generated types for {perAssembly.Count} assemblies ({combinedDts.Length} chars). Sending to CLI...");
+                            socket.Send(sb.ToString());
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.LogError($"[TypeGen] Error dumping types: {ex}");
+                            socket.Send($"{{\"type\":\"dump_types_result\",\"error\":\"{EscapeJson(ex.Message)}\"}}");
+                        }
+                    });
+                    break;
+                }
+
+                case "list_assemblies":
+                {
+                    _mainThreadQueue.Enqueue(() =>
+                    {
+                        try
+                        {
+                            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+                            var sb = new System.Text.StringBuilder();
+                            sb.Append("{\"type\":\"list_assemblies_result\",\"assemblies\":[");
+
+                            for (int i = 0; i < assemblies.Length; i++)
+                            {
+                                var a = assemblies[i];
+                                var name = a.GetName().Name ?? "Unknown";
+                                string location = "";
+                                try { location = a.Location ?? ""; } catch { }
+
+                                if (i > 0) sb.Append(",");
+                                sb.Append($"{{\"name\":\"{EscapeJson(name)}\",\"location\":\"{EscapeJson(location)}\"}}");
+                            }
+
+                            sb.Append("]}");
+                            socket.Send(sb.ToString());
+                        }
+                        catch (Exception ex)
+                        {
+                            socket.Send($"{{\"type\":\"list_assemblies_result\",\"error\":\"{EscapeJson(ex.Message)}\"}}");
+                        }
+                    });
+                    break;
+                }
+
+                case "unload":
+                    _mainThreadQueue.Enqueue(() =>
+                    {
+                        Logger.LogInfo("[BepinExJS] Unload requested by CLI. Cleaning up mod...");
+                        _runtimeManager?.Teardown();
+                        try { socket.Send("{\"type\":\"unload_ack\",\"status\":\"ok\"}"); } catch { }
+                    });
+                    break;
+
+                case "ping":
+                    try { socket.Send("{\"type\":\"pong\"}"); } catch { }
+                    break;
+
+                case "handshake":
+                {
+                    var currentProcess = System.Diagnostics.Process.GetCurrentProcess();
+                    var gameTitle = Application.productName;
+                    if (string.IsNullOrEmpty(gameTitle)) gameTitle = currentProcess.ProcessName;
+
+                    var reply = $@"{{
+  ""type"": ""handshake_ack"",
+  ""pid"": {currentProcess.Id},
+  ""gameTitle"": ""{EscapeJson(gameTitle)}"",
+  ""processName"": ""{EscapeJson(currentProcess.ProcessName)}"",
+  ""unityVersion"": ""{EscapeJson(Application.unityVersion)}"",
+  ""bepInVersion"": ""5.4.21"",
+  ""status"": ""ok""
+}}";
+                    socket.Send(reply);
+                    break;
+                }
+
+                case "cross_game_event":
+                {
+                    var eventName = ExtractJsonField(rawMessage, "event") ?? "";
+                    var pidStr = ExtractJsonField(rawMessage, "sourcePid");
+                    int sourcePid = 0;
+                    if (!string.IsNullOrEmpty(pidStr)) int.TryParse(pidStr, out sourcePid);
+
+                    // Extract raw data object/string
+                    var dataStart = rawMessage.IndexOf("\"data\":", StringComparison.OrdinalIgnoreCase);
+                    string dataJson = "{}";
+                    if (dataStart != -1)
+                    {
+                        dataStart += 7;
+                        while (dataStart < rawMessage.Length && char.IsWhiteSpace(rawMessage[dataStart])) dataStart++;
+                        var dataEnd = rawMessage.LastIndexOf('}');
+                        if (dataEnd > dataStart)
+                            dataJson = rawMessage.Substring(dataStart, dataEnd - dataStart).Trim();
                     }
-                    catch { }
-                });
-            }
-            else if (rawMessage.Contains("\"type\":\"ping\"") || rawMessage.Contains("\"type\": \"ping\""))
-            {
-                socket.Send("{\"type\":\"pong\"}");
+
+                    _runtimeManager?.CrossGame?.HandleIncomingEvent(eventName, dataJson, sourcePid);
+                    break;
+                }
+
+                default:
+                    Logger.LogWarning($"[BepinExJS] Unknown message type: {msgType}");
+                    break;
             }
         }
 
         private void Update()
         {
-            // Execute main-thread tasks
+            // Execute latest-wins pending reload (coalesces multiple queued reloads into one)
+            PendingReload? pending = null;
+            lock (_pendingReloadLock)
+            {
+                if (_pendingReload.HasValue)
+                {
+                    pending = _pendingReload;
+                    _pendingReload = null;
+                }
+            }
+
+            if (pending.HasValue)
+            {
+                var r = pending.Value;
+
+                if (r.Generation > 0 && r.Generation < _lastAppliedGeneration)
+                {
+                    Logger.LogWarning($"[BepinExJS] Discarding stale reload generation {r.Generation} (current: {_lastAppliedGeneration})");
+                    try { if (r.Socket.IsAvailable) r.Socket.Send($"{{\"type\":\"reload_ack\",\"status\":\"ignored\",\"generation\":{r.Generation}}}"); } catch { }
+                }
+                else
+                {
+                    if (r.Generation > 0) _lastAppliedGeneration = r.Generation;
+
+                    var result = _runtimeManager?.Reload(r.Code, r.Path, r.ModDir);
+                    try
+                    {
+                        if (r.Socket.IsAvailable)
+                        {
+                            if (result.HasValue && result.Value.Success)
+                                r.Socket.Send($"{{\"type\":\"reload_ack\",\"status\":\"ok\",\"generation\":{r.Generation}}}");
+                            else
+                            {
+                                var errorMsg = EscapeJson(result?.Error ?? "Runtime error");
+                                r.Socket.Send($"{{\"type\":\"reload_ack\",\"status\":\"error\",\"generation\":{r.Generation},\"message\":\"{errorMsg}\"}}");
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Logger.LogWarning($"[BepinExJS] Failed to send reload_ack: {ex.Message}"); }
+                }
+            }
+
+            // Execute main-thread tasks (eval, unload, dump_types, etc.)
             while (_mainThreadQueue.TryDequeue(out var action))
             {
                 try
@@ -180,6 +380,7 @@ namespace BepinExJS.Plugin
 
         private void OnDestroy()
         {
+            _sessionRegistry?.Dispose();
             _wsServer?.Dispose();
             _runtimeManager?.Dispose();
         }
@@ -204,44 +405,68 @@ namespace BepinExJS.Plugin
             var colonIdx = json.IndexOf(':', idx + key.Length);
             if (colonIdx == -1) return "";
 
-            // Find first quote after colon
-            var quoteStart = json.IndexOf('"', colonIdx);
-            if (quoteStart == -1) return "";
+            // Skip whitespace after colon
+            int start = colonIdx + 1;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            if (start >= json.Length) return "";
 
-            // Parse quoted string with escape handling
-            var sb = new System.Text.StringBuilder();
-            bool escaped = false;
-            for (int i = quoteStart + 1; i < json.Length; i++)
+            char first = json[start];
+
+            // Numeric value (integer or float, possibly negative)
+            if (char.IsDigit(first) || first == '-')
             {
-                char c = json[i];
-                if (escaped)
-                {
-                    switch (c)
-                    {
-                        case 'n': sb.Append('\n'); break;
-                        case 'r': sb.Append('\r'); break;
-                        case 't': sb.Append('\t'); break;
-                        case '"': sb.Append('"'); break;
-                        case '\\': sb.Append('\\'); break;
-                        default: sb.Append(c); break;
-                    }
-                    escaped = false;
-                }
-                else if (c == '\\')
-                {
-                    escaped = true;
-                }
-                else if (c == '"')
-                {
-                    break;
-                }
-                else
-                {
-                    sb.Append(c);
-                }
+                int end = start;
+                while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-' || json[end] == '+' || json[end] == 'e' || json[end] == 'E'))
+                    end++;
+                return json.Substring(start, end - start);
             }
 
-            return sb.ToString();
+            // Boolean or null (true / false / null)
+            if (first == 't' || first == 'f' || first == 'n')
+            {
+                int end = start;
+                while (end < json.Length && char.IsLetter(json[end])) end++;
+                return json.Substring(start, end - start);
+            }
+
+            // Quoted string — parse with escape handling
+            if (first == '"')
+            {
+                var sb = new System.Text.StringBuilder();
+                bool escaped = false;
+                for (int i = start + 1; i < json.Length; i++)
+                {
+                    char c = json[i];
+                    if (escaped)
+                    {
+                        switch (c)
+                        {
+                            case 'n': sb.Append('\n'); break;
+                            case 'r': sb.Append('\r'); break;
+                            case 't': sb.Append('\t'); break;
+                            case '"': sb.Append('"'); break;
+                            case '\\': sb.Append('\\'); break;
+                            default: sb.Append(c); break;
+                        }
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == '"')
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+                return sb.ToString();
+            }
+
+            return "";
         }
     }
 }

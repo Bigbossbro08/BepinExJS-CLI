@@ -78,3 +78,43 @@ declare function toUnityActionBool(fn: (val: boolean) => void): any;
 declare function toUnityActionFloat(fn: (val: number) => void): any;
 declare function toUnityActionString(fn: (val: string) => void): any;
 declare function toFunc(fn: () => any): any;
+
+/**
+ * Returns the CLR full type name or short name of any object safely.
+ */
+declare function getType(obj: any): string;
+
+/**
+ * Absolute directory path of the current self-contained mod project folder.
+ */
+declare const __dirname: string;
+
+/**
+ * Absolute file path of the executing script file.
+ */
+declare const __filename: string;
+
+/**
+ * Resolves a relative path against this mod project's directory.
+ */
+declare function resolvePath(relativePath: string): string;
+
+/**
+ * Cross-game peer-to-peer communication bridge.
+ */
+declare const CrossGame: {
+  /**
+   * Listen for an event emitted by another running Unity game.
+   */
+  on(eventName: string, callback: (data: any, sourcePid: number) => void): void;
+
+  /**
+   * Broadcast an event to all other running Unity games.
+   */
+  emit(eventName: string, data: any): void;
+
+  /**
+   * Discover other running Unity games with BepinExJS.
+   */
+  getGames(): { pid: number; gameTitle: string; processName: string; port: number }[];
+};

@@ -158,7 +158,18 @@ namespace BepinExJS.Plugin
                 var dirPath = Path.IsPathRooted(relDir) ? relDir : Path.Combine(_gameRoot, relDir);
                 if (Directory.Exists(dirPath))
                 {
-                    var files = Directory.GetFiles(dirPath, "*.js", SearchOption.AllDirectories);
+                    // A. Check for subdirectories (self-contained mod project folders)
+                    foreach (var subDir in Directory.GetDirectories(dirPath))
+                    {
+                        var entry = ResolveModFolderEntry(subDir);
+                        if (!string.IsNullOrEmpty(entry) && File.Exists(entry))
+                        {
+                            resolved.Add(Path.GetFullPath(entry));
+                        }
+                    }
+
+                    // B. Also collect any loose .js files directly in this autoload root
+                    var files = Directory.GetFiles(dirPath, "*.js", SearchOption.TopDirectoryOnly);
                     foreach (var file in files)
                     {
                         resolved.Add(Path.GetFullPath(file));
@@ -177,10 +188,22 @@ namespace BepinExJS.Plugin
             // 2. Scan explicit startupMods
             foreach (var relPath in StartupModFiles)
             {
-                var filePath = Path.IsPathRooted(relPath) ? relPath : Path.Combine(_gameRoot, relPath);
-                if (File.Exists(filePath))
+                var targetPath = Path.IsPathRooted(relPath) ? relPath : Path.Combine(_gameRoot, relPath);
+                if (Directory.Exists(targetPath))
                 {
-                    resolved.Add(Path.GetFullPath(filePath));
+                    var entry = ResolveModFolderEntry(targetPath);
+                    if (!string.IsNullOrEmpty(entry) && File.Exists(entry))
+                    {
+                        resolved.Add(Path.GetFullPath(entry));
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"[Config] Startup mod folder specified in BepInExJS.json has no valid entry file: {relPath}");
+                    }
+                }
+                else if (File.Exists(targetPath))
+                {
+                    resolved.Add(Path.GetFullPath(targetPath));
                 }
                 else
                 {
@@ -189,6 +212,52 @@ namespace BepinExJS.Plugin
             }
 
             return resolved;
+        }
+
+        public static string? ResolveModFolderEntry(string folderPath)
+        {
+            // 1. Check mod.json for explicit "main" or "entry" field
+            var manifestPath = Path.Combine(folderPath, "mod.json");
+            if (!File.Exists(manifestPath))
+            {
+                manifestPath = Path.Combine(folderPath, "package.json");
+            }
+
+            if (File.Exists(manifestPath))
+            {
+                try
+                {
+                    var text = File.ReadAllText(manifestPath);
+                    var parser = new Engine();
+                    var parsed = parser.Evaluate($"({text})");
+                    if (parsed.IsObject())
+                    {
+                        var obj = parsed.AsObject();
+                        var main = obj.Get("main");
+                        if (!main.IsString()) main = obj.Get("entry");
+                        if (main.IsString())
+                        {
+                            var candidate = Path.Combine(folderPath, main.AsString());
+                            if (File.Exists(candidate)) return candidate;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Common conventional entrypoints
+            string[] conventions = { "index.js", "mod.js", "main.js" };
+            foreach (var conv in conventions)
+            {
+                var candidate = Path.Combine(folderPath, conv);
+                if (File.Exists(candidate)) return candidate;
+            }
+
+            // 3. Folder named <folder>.js (e.g. MyMod/MyMod.js)
+            var folderNameJs = Path.Combine(folderPath, Path.GetFileName(folderPath) + ".js");
+            if (File.Exists(folderNameJs)) return folderNameJs;
+
+            return null;
         }
     }
 }

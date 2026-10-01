@@ -4,6 +4,7 @@
   "description": "Unity game mod built with BepinExJS",
   "scripts": {
     "dev": "bepinexjs dev src/index.ts",
+    "build": "bepinexjs build src/index.ts",
     "repl": "bepinexjs repl"
   },
   "devDependencies": {

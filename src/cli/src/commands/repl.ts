@@ -1,14 +1,28 @@
 import readline from 'readline';
 import WebSocket from 'ws';
 import chalk from 'chalk';
+import { resolveTargetSession } from '../sessionManager';
 
 interface ReplOptions {
-  port: number;
-  host: string;
+  port?: number;
+  host?: string;
+  game?: string;
 }
 
 export function runRepl(options: ReplOptions) {
-  const wsUrl = `ws://${options.host}:${options.port}`;
+  let targetPort = options.port;
+  let targetHost = options.host || '127.0.0.1';
+
+  const session = resolveTargetSession(options.game || targetPort);
+  if (session) {
+    targetPort = session.port;
+    targetHost = session.host || targetHost;
+    console.log(chalk.cyan(`[BepinExJS] Connecting REPL to ${chalk.bold.green(session.gameTitle)} (PID: ${session.pid})...`));
+  } else {
+    targetPort = targetPort || 9092;
+  }
+
+  const wsUrl = `ws://${targetHost}:${targetPort}`;
   console.log(chalk.cyan(`[BepinExJS] Connecting REPL to ${wsUrl}...`));
 
   const ws = new WebSocket(wsUrl);

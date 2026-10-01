@@ -3,10 +3,12 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { generateTypesContent } from './genTypes';
 
-export function runInit(projectName: string) {
-  const targetDir = path.resolve(process.cwd(), projectName);
+export function runInit(projectName?: string) {
+  const isCurrentDir = !projectName || projectName === '.';
+  const targetDir = isCurrentDir ? process.cwd() : path.resolve(process.cwd(), projectName);
+  const resolvedProjectName = isCurrentDir ? path.basename(targetDir) : projectName!;
 
-  if (fs.existsSync(targetDir)) {
+  if (!isCurrentDir && fs.existsSync(targetDir)) {
     console.error(chalk.red(`[Error] Directory '${projectName}' already exists.`));
     process.exit(1);
   }
@@ -15,14 +17,33 @@ export function runInit(projectName: string) {
 
   fs.mkdirSync(path.join(targetDir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(targetDir, 'types'), { recursive: true });
+  fs.mkdirSync(path.join(targetDir, 'assets'), { recursive: true });
+
+  // mod.json (self-contained mod manifest)
+  const modJson = {
+    name: resolvedProjectName,
+    version: '1.0.0',
+    description: 'Unity game mod built with BepinExJS',
+    author: 'Author',
+    entry: 'index.js'
+  };
+  fs.writeFileSync(path.join(targetDir, 'mod.json'), JSON.stringify(modJson, null, 2));
+
+  // sample asset inside assets/
+  const sampleData = {
+    welcomeMessage: "Hello from mod assets!",
+    spawnPosition: { x: 0, y: 2, z: 5 }
+  };
+  fs.writeFileSync(path.join(targetDir, 'assets', 'config.json'), JSON.stringify(sampleData, null, 2));
 
   // package.json
   const pkgJson = {
-    name: projectName.toLowerCase().replace(/\s+/g, '-'),
+    name: resolvedProjectName.toLowerCase().replace(/\s+/g, '-'),
     version: '1.0.0',
     description: 'Unity game mod built with BepinExJS',
     scripts: {
       dev: 'bepinexjs dev src/index.ts',
+      build: 'bepinexjs build src/index.ts',
       repl: 'bepinexjs repl'
     },
     devDependencies: {
@@ -50,10 +71,19 @@ export function runInit(projectName: string) {
 
   // src/index.ts
   const sampleModCode = `// BepinExJS Mod Entrypoint
-console.log("[Mod] MyMod loaded successfully!");
+console.log("[Mod] ${resolvedProjectName} loaded successfully!");
+console.log("[Mod] Project folder: " + __dirname);
+
+const File = CS.System.IO.File;
+
+// Read bundled asset from assets/ folder
+const configPath = resolvePath("assets/config.json");
+if (File.Exists(configPath)) {
+  const config = JSON.parse(File.ReadAllText(configPath));
+  console.log("[Mod] Asset config loaded: " + config.welcomeMessage);
+}
 
 let showWindow = true;
-let windowRect = { x: 50, y: 50, width: 260, height: 160 };
 
 // Draw Unity IMGUI GUI
 onGUI(() => {
@@ -63,12 +93,12 @@ onGUI(() => {
   const Rect = CS.UnityEngine.Rect;
 
   // Render a simple window
-  GUI.Box(new Rect(20, 20, 260, 150), "★ BepinExJS Mod Menu ★");
+  GUI.Box(new Rect(20, 20, 260, 150), "★ ${resolvedProjectName} ★");
 
   if (GUI.Button(new Rect(35, 60, 230, 30), "Spawn Test Cube")) {
     console.log("[Mod] Spawning a test cube...");
     const cube = CS.UnityEngine.GameObject.CreatePrimitive(CS.UnityEngine.PrimitiveType.Cube);
-    cube.name = "BepinExJS_Cube";
+    cube.name = "${resolvedProjectName}_Cube";
     cube.transform.position = new CS.UnityEngine.Vector3(0, 2, 5);
   }
 
@@ -78,16 +108,14 @@ onGUI(() => {
 });
 
 // Unity Update loop hook
-let timer = 0;
 onUpdate(() => {
-  // Check keypresses or tick logic
-  // e.g. CS.UnityEngine.Input.GetKeyDown(CS.UnityEngine.KeyCode.F5)
+  // e.g. if (CS.UnityEngine.Input.GetKeyDown(CS.UnityEngine.KeyCode.F5)) { ... }
 });
 
 // Teardown / cleanup hook executed prior to hot reload
 onUnload(() => {
-  console.log("[Mod] Unloading previous mod version...");
-  const existingCube = CS.UnityEngine.GameObject.Find("BepinExJS_Cube");
+  console.log("[Mod] Cleaning up before reload...");
+  const existingCube = CS.UnityEngine.GameObject.Find("${resolvedProjectName}_Cube");
   if (existingCube) {
     CS.UnityEngine.Object.Destroy(existingCube);
   }
@@ -112,6 +140,12 @@ onUnload(() => {
           kind: "build",
           isDefault: true
         }
+      },
+      {
+        label: "BepinExJS: Build Production Bundle",
+        type: "shell",
+        command: "bepinexjs build src/index.ts",
+        problemMatcher: []
       },
       {
         label: "BepinExJS: Interactive REPL",
@@ -139,9 +173,14 @@ onUnload(() => {
   // .gitignore
   fs.writeFileSync(path.join(targetDir, '.gitignore'), `node_modules/\ndist/\n`);
 
-  console.log(chalk.green(`\nMod project initialized successfully with VS Code setup!`));
+  console.log(chalk.green(`\n✓ Mod project '${chalk.bold(resolvedProjectName)}' initialized successfully with VS Code setup!`));
   console.log(`\nNext steps:`);
-  console.log(chalk.white(`  1. cd ${projectName}`));
-  console.log(chalk.white(`  2. Open in VS Code (code .)`));
-  console.log(chalk.white(`  3. Press Ctrl+Shift+B to start Hot-Reload dev mode!`));
+  if (!isCurrentDir) {
+    console.log(chalk.white(`  1. cd ${projectName}`));
+    console.log(chalk.white(`  2. Open in VS Code (code .)`));
+    console.log(chalk.white(`  3. Press Ctrl+Shift+B (or run 'npm run dev') to start Hot-Reload!`));
+  } else {
+    console.log(chalk.white(`  1. Open in VS Code (code .)`));
+    console.log(chalk.white(`  2. Press Ctrl+Shift+B (or run 'npm run dev') to start Hot-Reload!`));
+  }
 }

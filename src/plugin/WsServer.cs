@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
 using Fleck;
 
 namespace BepinExJS.Plugin
@@ -10,6 +12,8 @@ namespace BepinExJS.Plugin
         private readonly List<IWebSocketConnection> _clients = new List<IWebSocketConnection>();
         private readonly Action<string, IWebSocketConnection> _onMessageReceived;
         private readonly Action<string> _log;
+
+        public int BoundPort { get; private set; }
 
         public int ConnectedClientsCount
         {
@@ -22,7 +26,7 @@ namespace BepinExJS.Plugin
             }
         }
 
-        public WsServer(string ip, int port, Action<string, IWebSocketConnection> onMessageReceived, Action<string> log)
+        public WsServer(string ip, int preferredPort, Action<string, IWebSocketConnection> onMessageReceived, Action<string> log)
         {
             _onMessageReceived = onMessageReceived;
             _log = log;
@@ -30,17 +34,31 @@ namespace BepinExJS.Plugin
             // Fleck setup
             FleckLog.LogAction = (level, message, ex) => { }; // silence internal fleck logs
 
-            _server = new WebSocketServer($"ws://{ip}:{port}");
-            _server.Start(socket =>
+            int port = preferredPort;
+            const int maxAttempts = 20;
+
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                socket.OnOpen = () =>
+                try
                 {
-                    lock (_clients)
+                    // Pre-check if port is available on this IP
+                    var parsedIp = IPAddress.Parse(ip);
+                    var tester = new TcpListener(parsedIp, port);
+                    tester.ExclusiveAddressUse = true;
+                    tester.Start();
+                    tester.Stop();
+
+                    var server = new WebSocketServer($"ws://{ip}:{port}");
+                    server.Start(socket =>
                     {
-                        _clients.Add(socket);
-                    }
-                    _log($"[WsServer] Client connected: {socket.ConnectionInfo.ClientIpAddress}:{socket.ConnectionInfo.ClientPort}");
-                };
+                        socket.OnOpen = () =>
+                        {
+                            lock (_clients)
+                            {
+                                _clients.Add(socket);
+                            }
+                            _log($"[WsServer] Client connected: {socket.ConnectionInfo.ClientIpAddress}:{socket.ConnectionInfo.ClientPort}");
+                        };
 
                 socket.OnClose = () =>
                 {
@@ -63,13 +81,25 @@ namespace BepinExJS.Plugin
                     }
                 };
 
-                socket.OnError = ex =>
-                {
-                    _log($"[WsServer] Socket error: {ex.Message}");
-                };
-            });
+                        socket.OnError = ex =>
+                        {
+                            _log($"[WsServer] Socket error: {ex.Message}");
+                        };
+                    });
 
-            _log($"[WsServer] Started listening on ws://{ip}:{port}");
+                    _server = server;
+                    BoundPort = port;
+                    _log($"[WsServer] Started listening on ws://{ip}:{port}");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _log($"[WsServer] Port {port} unavailable: {ex.Message}. Trying next port...");
+                    port++;
+                }
+            }
+
+            throw new InvalidOperationException($"[WsServer] Could not bind WebSocket server to any port between {preferredPort} and {preferredPort + maxAttempts - 1}.");
         }
 
         public void Broadcast(string message)

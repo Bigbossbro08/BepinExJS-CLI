@@ -1,0 +1,7 @@
+{
+  "name": "sample-mod",
+  "version": "1.0.0",
+  "description": "Unity game mod built with BepinExJS",
+  "author": "Author",
+  "entry": "src/index.ts"
+}

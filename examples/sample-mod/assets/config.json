@@ -1,0 +1,8 @@
+{
+  "welcomeMessage": "Hello from mod assets!",
+  "spawnPosition": {
+    "x": 0,
+    "y": 2,
+    "z": 5
+  }
+}

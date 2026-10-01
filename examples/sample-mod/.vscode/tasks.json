@@ -10,30 +10,25 @@
       "group": {
         "kind": "build",
         "isDefault": true
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
       }
+    },
+    {
+      "label": "BepinExJS: Build Production Bundle",
+      "type": "shell",
+      "command": "bepinexjs build src/index.ts",
+      "problemMatcher": []
     },
     {
       "label": "BepinExJS: Interactive REPL",
       "type": "shell",
       "command": "bepinexjs repl",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "new"
-      }
+      "problemMatcher": []
     },
     {
       "label": "BepinExJS: Extract Live C# Types",
       "type": "shell",
       "command": "bepinexjs gen-types --live",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
+      "problemMatcher": []
     }
   ]
 }

@@ -11,15 +11,32 @@ interface BuildOptions {
 
 export async function runBuild(entryFile: string, options: BuildOptions) {
   const cwd = process.cwd();
-  const fullEntry = path.resolve(cwd, entryFile);
+
+  // Resolve entry file, respecting mod.json if entryFile is the default "src/index.ts"
+  let resolvedEntry = entryFile;
+  const modJsonPath = path.join(cwd, 'mod.json');
+  if (fs.existsSync(modJsonPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(modJsonPath, 'utf8'));
+      if (entryFile === 'src/index.ts' && parsed.entry && typeof parsed.entry === 'string') {
+        resolvedEntry = parsed.entry;
+      }
+    } catch { }
+  }
+
+  const fullEntry = path.resolve(cwd, resolvedEntry);
 
   if (!fs.existsSync(fullEntry)) {
     console.error(chalk.red(`[Error] Entry file not found: ${fullEntry}`));
+    if (resolvedEntry !== entryFile) {
+      console.error(chalk.yellow(`  (Specified in mod.json entry: "${resolvedEntry}")`));
+    }
     process.exit(1);
   }
 
   // Determine output path
   let targetPath: string;
+  let targetModDir: string | null = null;
 
   if (options.out) {
     targetPath = path.resolve(cwd, options.out);
@@ -28,8 +45,12 @@ export async function runBuild(entryFile: string, options: BuildOptions) {
     if (!fs.existsSync(scriptsDir)) {
       fs.mkdirSync(scriptsDir, { recursive: true });
     }
-    const modName = path.basename(cwd) + '.js';
-    targetPath = path.join(scriptsDir, modName);
+    const modFolderName = path.basename(cwd);
+    targetModDir = path.join(scriptsDir, modFolderName);
+    if (!fs.existsSync(targetModDir)) {
+      fs.mkdirSync(targetModDir, { recursive: true });
+    }
+    targetPath = path.join(targetModDir, 'index.js');
 
     // Ensure BepInExJS.json exists in game root
     const configPath = path.resolve(options.gameDir, 'BepInExJS.json');
@@ -81,8 +102,25 @@ export async function runBuild(entryFile: string, options: BuildOptions) {
     console.log(chalk.green(`\n✓ Build successful in ${duration}ms!`));
     console.log(chalk.white(`  File: ${targetPath} (${(stats.size / 1024).toFixed(1)} KB)`));
 
+    if (targetModDir) {
+      // Copy assets folder if present
+      const srcAssets = path.join(cwd, 'assets');
+      const dstAssets = path.join(targetModDir, 'assets');
+      if (fs.existsSync(srcAssets)) {
+        fs.cpSync(srcAssets, dstAssets, { recursive: true });
+        console.log(chalk.gray(`  Copied assets/ to mod folder.`));
+      }
+
+      // Copy mod.json if present
+      const srcModJson = path.join(cwd, 'mod.json');
+      if (fs.existsSync(srcModJson)) {
+        fs.copyFileSync(srcModJson, path.join(targetModDir, 'mod.json'));
+      }
+    }
+
     if (options.gameDir) {
-      console.log(chalk.green(`\n★ Installed to <game>/BepInExJS/${path.basename(targetPath)}!`));
+      const folderName = targetModDir ? path.basename(targetModDir) : path.basename(targetPath);
+      console.log(chalk.green(`\n★ Installed to <game>/BepInExJS/${folderName}/!`));
       console.log(chalk.cyan(`  Configured in <game>/BepInExJS.json to execute automatically on game startup.`));
     } else {
       console.log(chalk.yellow(`\nTip: To run this mod automatically on game startup, copy it to:`));

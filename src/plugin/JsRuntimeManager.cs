@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using BepInEx.Logging;
@@ -137,10 +138,12 @@ namespace BepinExJS.Plugin
     {
         private readonly ManualLogSource _logger;
         private readonly Action<string, string> _onLogForward;
+        private readonly Action<Action>? _runOnMainThread;
         private Engine? _engine;
         private readonly HarmonyBridge _harmonyBridge;
         private readonly MonoBehaviour? _coroutineHost;
         private CoroutineBridge? _coroutineBridge;
+        private CrossGameBridge? _crossGameBridge;
 
         // Lifecycle callbacks registered from JS
         private readonly List<Action> _updateHooks = new List<Action>();
@@ -150,15 +153,30 @@ namespace BepinExJS.Plugin
 
         private readonly object _lock = new object();
 
-        public JsRuntimeManager(ManualLogSource logger, Action<string, string> onLogForward, MonoBehaviour? coroutineHost = null)
+        // Last-known-good state: restored when a new reload fails at runtime
+        private string? _lastGoodCode;
+        private string? _lastGoodSourceName;
+        private string? _lastGoodModDir;
+
+        // Per-startup-mod sandboxed engines (one Engine per autoloaded mod, never shared)
+        private readonly List<Engine> _startupEngines = new List<Engine>();
+
+        public CrossGameBridge? CrossGame => _crossGameBridge;
+
+        public JsRuntimeManager(ManualLogSource logger, Action<string, string> onLogForward, MonoBehaviour? coroutineHost = null, Action<Action>? runOnMainThread = null)
         {
             _logger = logger;
             _onLogForward = onLogForward;
             _coroutineHost = coroutineHost;
+            _runOnMainThread = runOnMainThread;
             _harmonyBridge = new HarmonyBridge("com.bepinexjs.dynamic");
+
+            // CrossGameBridge is created once and lives for the plugin lifetime.
+            // It is NOT torn down on hot reload so remote WS connections are preserved.
+            _crossGameBridge = new CrossGameBridge(_logger, null!, _runOnMainThread ?? (act => act()));
         }
 
-        public void Reload(string code, string sourceName = "mod.bundle.js")
+        public (bool Success, string? Error) Reload(string code, string sourceName = "mod.bundle.js", string? modDir = null)
         {
             lock (_lock)
             {
@@ -173,47 +191,142 @@ namespace BepinExJS.Plugin
                     options.CatchClrExceptions();
                 });
 
+                // Resolve directory
+                string resolvedDir;
+                if (!string.IsNullOrEmpty(modDir))
+                {
+                    resolvedDir = modDir!;
+                }
+                else
+                {
+                    try
+                    {
+                        var dir = Path.GetDirectoryName(sourceName);
+                        resolvedDir = string.IsNullOrEmpty(dir) ? Directory.GetCurrentDirectory() : Path.GetFullPath(dir);
+                    }
+                    catch
+                    {
+                        resolvedDir = Directory.GetCurrentDirectory();
+                    }
+                }
+
                 // 3. Register Globals and Bridges
-                SetupGlobals(_engine);
+                SetupGlobals(_engine, resolvedDir, sourceName);
 
                 // 4. Evaluate code
                 try
                 {
                     _engine.Execute(code, sourceName);
-                    _logger.LogInfo($"[BepinExJS] Successfully loaded/reloaded {sourceName}");
+                    _logger.LogInfo($"[BepinExJS] Successfully loaded/reloaded {sourceName} (dir: {resolvedDir})");
                     _onLogForward?.Invoke("info", $"Successfully loaded/reloaded {sourceName}");
+
+                    // Persist last-known-good state for fallback
+                    _lastGoodCode = code;
+                    _lastGoodSourceName = sourceName;
+                    _lastGoodModDir = resolvedDir;
+
+                    return (true, null);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError($"[BepinExJS] Error executing script: {ex}");
                     _onLogForward?.Invoke("error", $"Execution error: {ex.Message}\n{ex.StackTrace}");
+
+                    // Attempt to restore last-known-good bundle so the game stays modded
+                    if (_lastGoodCode != null)
+                    {
+                        _logger.LogWarning("[BepinExJS] Attempting to restore last known-good bundle...");
+                        _onLogForward?.Invoke("warn", "Hot-reload failed — restoring last known-good bundle.");
+                        TryRestoreLastGood();
+                    }
+
+                    return (false, ex.Message);
                 }
             }
         }
 
-        public void ExecuteStartupScript(string code, string sourceName = "startup.js")
+        /// <summary>
+        /// Re-executes the last successfully loaded bundle after a failed reload.
+        /// Called from within the _lock in Reload(). Does NOT update _lastGood fields.
+        /// </summary>
+        private void TryRestoreLastGood()
+        {
+            if (_lastGoodCode == null) return;
+
+            try
+            {
+                // Teardown the broken engine from the failed attempt
+                _engine?.Dispose();
+                _engine = null;
+
+                _engine = new Engine(options =>
+                {
+                    options.AllowClr(AppDomain.CurrentDomain.GetAssemblies());
+                    options.AllowOperatorOverloading();
+                    options.CatchClrExceptions();
+                });
+
+                SetupGlobals(_engine, _lastGoodModDir ?? Directory.GetCurrentDirectory(), _lastGoodSourceName ?? "mod.bundle.js");
+                _engine.Execute(_lastGoodCode, _lastGoodSourceName ?? "mod.bundle.js");
+                _logger.LogInfo("[BepinExJS] Last known-good bundle restored successfully.");
+                _onLogForward?.Invoke("info", "Last known-good bundle restored. Fix the error in your code and save again.");
+            }
+            catch (Exception restoreEx)
+            {
+                _logger.LogError($"[BepinExJS] Failed to restore last known-good bundle: {restoreEx.Message}");
+                _onLogForward?.Invoke("error", $"Restore also failed: {restoreEx.Message}. Mod is unloaded.");
+                _engine?.Dispose();
+                _engine = null;
+            }
+        }
+
+        /// <summary>
+        /// Executes a startup (autoloaded) mod script in its own isolated Engine sandbox.
+        /// Each call produces a new Engine so that mods cannot pollute each other's globals.
+        /// </summary>
+        public void ExecuteStartupScript(string code, string sourceName = "startup.js", string? modDir = null)
         {
             lock (_lock)
             {
-                if (_engine == null)
+                string resolvedDir;
+                if (!string.IsNullOrEmpty(modDir))
                 {
-                    _engine = new Engine(options =>
-                    {
-                        options.AllowClr(AppDomain.CurrentDomain.GetAssemblies());
-                        options.AllowOperatorOverloading();
-                        options.CatchClrExceptions();
-                    });
-                    SetupGlobals(_engine);
+                    resolvedDir = modDir!;
                 }
+                else
+                {
+                    try
+                    {
+                        var dir = Path.GetDirectoryName(sourceName);
+                        resolvedDir = string.IsNullOrEmpty(dir) ? Directory.GetCurrentDirectory() : Path.GetFullPath(dir);
+                    }
+                    catch
+                    {
+                        resolvedDir = Directory.GetCurrentDirectory();
+                    }
+                }
+
+                // Each startup mod gets its own isolated Engine — no shared global state
+                var sandboxEngine = new Engine(options =>
+                {
+                    options.AllowClr(AppDomain.CurrentDomain.GetAssemblies());
+                    options.AllowOperatorOverloading();
+                    options.CatchClrExceptions();
+                });
+
+                SetupGlobals(sandboxEngine, resolvedDir, sourceName);
 
                 try
                 {
-                    _engine.Execute(code, sourceName);
+                    sandboxEngine.Execute(code, sourceName);
                     _logger.LogInfo($"[BepinExJS] Successfully executed startup script: {sourceName}");
+                    _startupEngines.Add(sandboxEngine);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError($"[BepinExJS] Error executing startup script {sourceName}: {ex}");
+                    // Dispose the failed engine immediately; don't track it
+                    try { sandboxEngine.Dispose(); } catch { }
                 }
             }
         }
@@ -230,7 +343,7 @@ namespace BepinExJS.Plugin
                         options.AllowOperatorOverloading();
                         options.CatchClrExceptions();
                     });
-                    SetupGlobals(_engine);
+                    SetupGlobals(_engine, Directory.GetCurrentDirectory(), "repl.js");
                 }
 
                 try
@@ -245,8 +358,13 @@ namespace BepinExJS.Plugin
             }
         }
 
-        private void SetupGlobals(Engine engine)
+        private void SetupGlobals(Engine engine, string modDir, string sourcePath)
         {
+            // Inject mod directory and filename globals
+            engine.SetValue("__dirname", modDir);
+            engine.SetValue("__filename", sourcePath);
+            engine.SetValue("resolvePath", new Func<string, string>(rel => Path.GetFullPath(Path.Combine(modDir, rel))));
+
             // CS namespace root
             engine.SetValue("CS", new ClrNamespaceInstance(engine, this, ""));
 
@@ -297,6 +415,24 @@ namespace BepinExJS.Plugin
             engine.SetValue("toUnityActionFloat", new Func<JsValue, UnityAction<float>>(actionBridge.CreateUnityActionFloat));
             engine.SetValue("toUnityActionString", new Func<JsValue, UnityAction<string>>(actionBridge.CreateUnityActionString));
             engine.SetValue("toFunc", new Func<JsValue, Func<object?>>(actionBridge.CreateFunc));
+
+            // CrossGame event communication — re-wrap the long-lived bridge in a fresh JS-side wrapper.
+            // The bridge itself is created once in the constructor and survives hot reloads.
+            if (_crossGameBridge != null)
+            {
+                _crossGameBridge.UpdateEngine(engine);
+                engine.SetValue("CrossGame", new CrossGameJsWrapper(_crossGameBridge));
+            }
+
+            // getType helper to inspect any object or CLR instance's type name safely
+            engine.SetValue("getType", new Func<JsValue, string>(val =>
+            {
+                if (val == null || val.IsNull() || val.IsUndefined()) return "null";
+                var obj = val.ToObject();
+                if (obj == null) return "null";
+                if (obj is Type t) return t.FullName ?? t.Name;
+                return obj.GetType().FullName ?? obj.GetType().Name;
+            }));
 
             // Coroutine & Async delay helpers
             if (!object.ReferenceEquals(_coroutineHost, null))
@@ -364,7 +500,7 @@ namespace BepinExJS.Plugin
 
         public void Teardown()
         {
-            // Run unload callbacks
+            // Run unload callbacks from the hot-reload engine
             foreach (var hook in _unloadHooks)
             {
                 try { hook(); } catch (Exception ex) { _logger.LogError($"[Teardown] Error in onUnload: {ex}"); }
@@ -380,11 +516,29 @@ namespace BepinExJS.Plugin
             _coroutineBridge?.StopAll();
             _coroutineBridge = null;
 
-            // Unpatch Harmony
-            _harmonyBridge.UnpatchAll();
+            // Unpatch Dynamic Harmony patches
+            _harmonyBridge?.UnpatchAll();
+
+            // Note: _crossGameBridge is NOT disposed here — it lives for the full plugin lifetime.
+            // It is disposed only in Dispose() (full shutdown).
 
             _engine?.Dispose();
             _engine = null;
+        }
+
+        /// <summary>
+        /// Disposes all sandboxed startup-mod engines. Called on full plugin shutdown.
+        /// </summary>
+        private void TeardownStartupEngines()
+        {
+            lock (_lock)
+            {
+                foreach (var eng in _startupEngines)
+                {
+                    try { eng.Dispose(); } catch (Exception ex) { _logger.LogWarning($"[Teardown] Error disposing startup engine: {ex.Message}"); }
+                }
+                _startupEngines.Clear();
+            }
         }
 
         public void TickUpdate()
@@ -433,6 +587,8 @@ namespace BepinExJS.Plugin
         public void Dispose()
         {
             Teardown();
+            TeardownStartupEngines();
+            _crossGameBridge?.Dispose();
         }
     }
 }

@@ -7,6 +7,8 @@ import { runInit } from './commands/init';
 import { runGenTypes } from './commands/genTypes';
 
 import { runBuild } from './commands/build';
+import { runGames } from './commands/games';
+import { runAssemblies } from './commands/assemblies';
 
 const program = new Command();
 
@@ -14,6 +16,29 @@ program
   .name('bepinexjs')
   .description('CLI tool and hot-reload dev server for BepInEx JavaScript Unity mods')
   .version('0.1.0');
+
+program
+  .command('games')
+  .description('List all active Unity game instances running with BepinExJS')
+  .action(() => {
+    runGames();
+  });
+
+program
+  .command('assemblies')
+  .description('List all C# assembly DLLs loaded in the running Unity game')
+  .option('-g, --game <nameOrPid>', 'Target running game name, executable, or PID')
+  .option('-f, --filter <query>', 'Filter assemblies by name or path substring')
+  .option('-p, --port <port>', 'WebSocket port of in-game plugin')
+  .option('-h, --host <host>', 'WebSocket host of in-game plugin', '127.0.0.1')
+  .action((opts) => {
+    runAssemblies({
+      game: opts.game,
+      filter: opts.filter,
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
+      host: opts.host
+    });
+  });
 
 program
   .command('build [entry]')
@@ -32,11 +57,13 @@ program
 program
   .command('dev [entry]')
   .description('Bundle, watch, and hot-reload your JavaScript/TypeScript mod into Unity')
-  .option('-p, --port <port>', 'WebSocket port of in-game plugin', '9092')
+  .option('-g, --game <nameOrPid>', 'Target running game name, executable, or PID')
+  .option('-p, --port <port>', 'WebSocket port of in-game plugin')
   .option('-h, --host <host>', 'WebSocket host of in-game plugin', '127.0.0.1')
   .action((entry = 'src/index.ts', opts) => {
     runDev(entry, {
-      port: parseInt(opts.port, 10),
+      game: opts.game,
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
       host: opts.host,
       cwd: process.cwd()
     });
@@ -45,11 +72,13 @@ program
 program
   .command('repl')
   .description('Interactive terminal REPL connected to running Unity game instance')
-  .option('-p, --port <port>', 'WebSocket port of in-game plugin', '9092')
+  .option('-g, --game <nameOrPid>', 'Target running game name, executable, or PID')
+  .option('-p, --port <port>', 'WebSocket port of in-game plugin')
   .option('-h, --host <host>', 'WebSocket host of in-game plugin', '127.0.0.1')
   .action((opts) => {
     runRepl({
-      port: parseInt(opts.port, 10),
+      game: opts.game,
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
       host: opts.host
     });
   });
@@ -64,17 +93,24 @@ program
 program
   .command('gen-types')
   .description('Generate TypeScript type definitions for BepinExJS')
-  .option('-l, --live', 'Connect to running game to dump all loaded C# types into game.d.ts')
-  .option('-p, --port <port>', 'WebSocket port of in-game plugin', '9092')
+  .option('-l, --live', 'Connect to running game to dump loaded C# types')
+  .option('-s, --split', 'Generate separate modular .d.ts files per assembly in types/assemblies/', true)
+  .option('--no-split', 'Bundle all assembly types into a single game.d.ts file')
+  .option('-g, --game <nameOrPid>', 'Target running game name, executable, or PID')
+  .option('-a, --assemblies <assemblies>', 'Comma-separated assemblies to extract (e.g. "Assembly-CSharp,mscorlib,System")')
+  .option('-p, --port <port>', 'WebSocket port of in-game plugin')
   .option('-h, --host <host>', 'WebSocket host of in-game plugin', '127.0.0.1')
-  .option('-o, --output <path>', 'Output path for .d.ts file')
+  .option('-o, --output <path>', 'Output path for bepinex.d.ts or root types folder')
   .option('-m, --managed-dir <path>', 'Path to game Managed/ directory')
   .action((opts) => {
     runGenTypes({
       output: opts.output,
       managedDir: opts.managedDir,
+      assemblies: opts.assemblies,
       live: opts.live,
-      port: parseInt(opts.port, 10),
+      split: opts.split,
+      game: opts.game,
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
       host: opts.host
     });
   });

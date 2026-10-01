@@ -10,6 +10,12 @@ namespace BepinExJS.Plugin
         private readonly MonoBehaviour _host;
         private readonly List<Coroutine> _activeCoroutines = new List<Coroutine>();
 
+        /// <summary>
+        /// Set to true by StopAll(). Prevents callbacks from firing into a disposed Jint engine
+        /// if Unity's coroutine scheduler yields one more frame after StopCoroutine() is called.
+        /// </summary>
+        private volatile bool _isStopped = false;
+
         public CoroutineBridge(MonoBehaviour host)
         {
             _host = host;
@@ -55,6 +61,7 @@ namespace BepinExJS.Plugin
 
         public void StopAll()
         {
+            _isStopped = true;
             lock (_activeCoroutines)
             {
                 foreach (var cr in _activeCoroutines)
@@ -68,6 +75,7 @@ namespace BepinExJS.Plugin
         private IEnumerator WaitSecondsRoutine(float seconds, Action onComplete)
         {
             yield return new WaitForSeconds(seconds);
+            if (_isStopped) yield break;
             try
             {
                 onComplete();
@@ -81,6 +89,7 @@ namespace BepinExJS.Plugin
         private IEnumerator WaitNextFrameRoutine(Action onComplete)
         {
             yield return null;
+            if (_isStopped) yield break;
             try
             {
                 onComplete();
@@ -94,6 +103,7 @@ namespace BepinExJS.Plugin
         private IEnumerator WaitForFixedUpdateRoutine(Action onComplete)
         {
             yield return new WaitForFixedUpdate();
+            if (_isStopped) yield break;
             try
             {
                 onComplete();
